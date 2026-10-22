@@ -1,0 +1,12 @@
+{
+  "type": "panel",
+  "i18n": false,
+  "items": {
+    "dashboard": {
+      "type": "custom",
+      "url": "custom/customComponents.js",
+      "name": "MatterBridgeSlim/Components/Dashboard",
+      "guiApi": 2
+    }
+  }
+}

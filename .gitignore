@@ -1,0 +1,15 @@
+node_modules/
+build/
+logs/
+.DS_Store
+*.tgz
+*.bak
+*.bak-*
+.env
+.env.*
+*.bak.*
+src-admin/build/
+!.env.example
+
+/build.backup-*/
+/src-admin/.mf/

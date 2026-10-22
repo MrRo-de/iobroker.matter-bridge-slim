@@ -1,0 +1,40 @@
+{
+  "name": "iobroker.matter-bridge-slim",
+  "version": "0.1.0",
+  "description": "Independent Matter bridge adapter for ioBroker",
+  "main": "build/src/main.js",
+  "scripts": {
+    "build": "npm run build:admin && tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "start": "node build/src/main.js",
+    "build:admin": "tsx tasks.ts",
+    "build:admin:clean": "tsx tasks.ts --0-clean",
+    "build:admin:frontend": "tsx tasks.ts --2-build",
+    "build:admin:copy": "tsx tasks.ts --3-copy"
+  },
+  "dependencies": {
+    "@iobroker/adapter-core": "^3.4.3",
+    "@matter/main": "^0.18.0"
+  },
+  "devDependencies": {
+    "@iobroker/build-tools": "^3.0.1",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.8.0"
+  },
+  "iobroker": {
+    "type": "general",
+    "tier": 2,
+    "compact": true,
+    "connectionType": "local",
+    "dataSource": "push",
+    "materialize": true,
+    "mode": "daemon"
+  },
+  "files": [
+    "admin/",
+    "build/",
+    "io-package.json",
+    "shared/"
+  ]
+}

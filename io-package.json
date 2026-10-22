@@ -1,0 +1,25 @@
+{
+  "common": {
+    "name": "matter-bridge-slim",
+    "version": "0.1.0",
+    "title": "Matter Bridge Slim",
+    "desc": "Independent Matter bridge adapter for ioBroker",
+    "mode": "daemon",
+    "platform": "Javascript/Node.js",
+    "enabled": true,
+    "loglevel": "info",
+    "connectionType": "local",
+    "dataSource": "push",
+    "adminUI": {
+      "config": "json"
+    },
+    "icon": "matter-bridge-slim.png",
+    "messagebox": true
+  },
+  "native": {
+    "bridges": [],
+    "devices": []
+  },
+  "objects": [],
+  "instanceObjects": []
+}
