@@ -11,7 +11,7 @@ können abhängig vom Matter-Controller und den eingebundenen Geräten variieren
 
 ## Funktionen
 
-- Mehrere unabhängig konfigurierte Matter-Bridges.
+- Eine unabhängig konfigurierte Matter-Bridge.
 - Konfigurierbare Bridge-Ports (Standard: `5540`).
 - Gerätezuordnung über ioBroker-State-IDs.
 - Unterstützte Gerätetypen:
