@@ -11,7 +11,7 @@ depending on the Matter controller and the devices being bridged.
 
 ## Features
 
-- Multiple independently configured Matter bridges.
+- A Matter bridge for ioBroker.
 - Configurable bridge ports (default: `5540`).
 - State-based device configuration using ioBroker state IDs.
 - Supported device types:
