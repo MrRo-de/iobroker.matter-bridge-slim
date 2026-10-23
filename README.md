@@ -53,8 +53,7 @@ appropriate ioBroker adapter installation procedure.
 
 ## Configuration
 
-Create one bridge in the adapter administration interface. The bridge
-bridge has an ID, a name, and a Matter port. Add devices to a bridge and
+Create one bridge in the adapter administration interface. The bridge has an ID, a name, and a Matter port. Add devices to a bridge and
 select the relevant ioBroker state IDs.
 
 Device configuration depends on the selected type:
