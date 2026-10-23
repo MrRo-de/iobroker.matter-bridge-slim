@@ -2,6 +2,7 @@
 const adapter_core_1 = require("@iobroker/adapter-core");
 const main_1 = require("@matter/main");
 const commissioning_1 = require("@matter/node/behaviors/system/commissioning");
+const operational_credentials_1 = require("@matter/node/behaviors/operational-credentials");
 const bridged_device_basic_information_1 = require("@matter/main/behaviors/bridged-device-basic-information");
 const on_off_1 = require("@matter/main/behaviors/on-off");
 const on_off_plug_in_unit_1 = require("@matter/main/devices/on-off-plug-in-unit");
@@ -389,9 +390,23 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
         });
     }
     async refreshBridgeMatterState(bridgeId, server) {
-        const commissioning = server.state.commissioning;
-        await this.setBridgeMatterState(bridgeId, "commissioned", commissioning.commissioned);
-        await this.setBridgeMatterState(bridgeId, "fabricCount", Object.keys(commissioning.fabrics).length);
+        const snapshot = await server.act(agent => {
+            const commissioning = agent.get(commissioning_1.CommissioningServer).state;
+            const credentials = agent.get(operational_credentials_1.OperationalCredentialsBehavior).state;
+            return {
+                commissioned: commissioning.commissioned,
+                fabricCount: Object.keys(commissioning.fabrics).length,
+                commissionedFabrics: credentials.commissionedFabrics,
+                credentialsFabricCount: credentials.fabrics.length,
+            };
+        });
+        this.log.info(`Matter-Statusdiagnose Bridge "${bridgeId}": ` +
+            `commissioned=${snapshot.commissioned}, ` +
+            `fabricCount=${snapshot.fabricCount}, ` +
+            `commissionedFabrics=${snapshot.commissionedFabrics}, ` +
+            `credentialsFabricCount=${snapshot.credentialsFabricCount}`);
+        await this.setBridgeMatterState(bridgeId, "commissioned", snapshot.commissioned);
+        await this.setBridgeMatterState(bridgeId, "fabricCount", snapshot.fabricCount);
     }
     registerBridgeCommissioningListeners(bridgeId, server) {
         const events = server.events.commissioning;

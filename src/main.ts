@@ -1,6 +1,7 @@
 import { Adapter, type AdapterOptions } from "@iobroker/adapter-core";
 import { Endpoint, ServerNode, VendorId } from "@matter/main";
 import { CommissioningServer } from "@matter/node/behaviors/system/commissioning";
+import { OperationalCredentialsBehavior } from "@matter/node/behaviors/operational-credentials";
 import { BridgedDeviceBasicInformationServer } from "@matter/main/behaviors/bridged-device-basic-information";
 import { OnOffServer } from "@matter/main/behaviors/on-off";
 import { OnOffPlugInUnitDevice } from "@matter/main/devices/on-off-plug-in-unit";
@@ -543,16 +544,35 @@ class MatterBridgeSlim extends Adapter {
         bridgeId: string,
         server: ServerNode,
     ): Promise<void> {
-        const commissioning = server.state.commissioning;
+        const snapshot = await server.act(agent => {
+            const commissioning = agent.get(CommissioningServer).state;
+            const credentials = agent.get(OperationalCredentialsBehavior).state;
+
+            return {
+                commissioned: commissioning.commissioned,
+                fabricCount: Object.keys(commissioning.fabrics).length,
+                commissionedFabrics: credentials.commissionedFabrics,
+                credentialsFabricCount: credentials.fabrics.length,
+            };
+        });
+
+        this.log.info(
+            `Matter-Statusdiagnose Bridge "${bridgeId}": ` +
+            `commissioned=${snapshot.commissioned}, ` +
+            `fabricCount=${snapshot.fabricCount}, ` +
+            `commissionedFabrics=${snapshot.commissionedFabrics}, ` +
+            `credentialsFabricCount=${snapshot.credentialsFabricCount}`,
+        );
+
         await this.setBridgeMatterState(
             bridgeId,
             "commissioned",
-            commissioning.commissioned,
+            snapshot.commissioned,
         );
         await this.setBridgeMatterState(
             bridgeId,
             "fabricCount",
-            Object.keys(commissioning.fabrics).length,
+            snapshot.fabricCount,
         );
     }
 
