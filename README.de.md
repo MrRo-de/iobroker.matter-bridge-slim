@@ -53,7 +53,7 @@ ioBroker-Installationsverfahren für Adapter.
 
 ## Konfiguration
 
-Lege in der Adapteradministration eine oder mehrere Bridges an. Jede Bridge
+Lege in der Adapteradministration eine Bridge an. Diese Bridge
 besitzt eine ID, einen Namen und einen Matter-Port. Füge anschließend Geräte
 hinzu und wähle die passenden ioBroker-State-IDs aus.
 
