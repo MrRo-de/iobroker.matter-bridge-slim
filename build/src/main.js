@@ -199,6 +199,7 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
     stateToEndpoint = new Map();
     matterServers = [];
     matterServersById = new Map();
+    commissioningStateCleanup = new Map();
     constructor(options = {}) {
         super({
             ...options,
@@ -257,42 +258,93 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
             }
         });
         this.on("message", (obj) => {
-            if (!obj || obj.command !== "reopenCommissioning") {
+            if (!obj ||
+                (obj.command !== "reopenCommissioning" && obj.command !== "deleteBridge")) {
                 return;
             }
-            this.log.info(`Diagnose reopenCommissioning: Nachricht empfangen; from=${String(obj.from)}, callback=${String(Boolean(obj.callback))}`);
             if (!obj.callback) {
-                this.log.warn("Diagnose reopenCommissioning: Kein Callback in der Nachricht.");
+                this.log.warn(`${obj.command}: Kein Callback in der Nachricht.`);
                 return;
             }
             const bridgeId = isRecord(obj.message) ? obj.message.bridgeId : undefined;
-            this.log.info(`Diagnose reopenCommissioning: bridgeId=${String(bridgeId)}`);
             if (!nonEmptyString(bridgeId)) {
                 this.sendTo(obj.from, obj.command, { ok: false, error: "Ungültige Bridge-ID." }, obj.callback);
                 return;
             }
-            const server = this.matterServersById.get(bridgeId);
-            if (!server) {
-                this.sendTo(obj.from, obj.command, {
-                    ok: false,
-                    error: `Bridge "${bridgeId}" ist nicht aktiv.`,
-                }, obj.callback);
+            if (obj.command === "deleteBridge") {
+                void (async () => {
+                    try {
+                        const server = this.matterServersById.get(bridgeId);
+                        if (!server) {
+                            throw new Error(`Bridge "${bridgeId}" ist nicht aktiv; Löschung abgebrochen.`);
+                        }
+                        if (this.matterServers.includes(server)) {
+                            this.log.info(`deleteBridge: Stoppe Matter-Server "${bridgeId}".`);
+                            await server.stop();
+                            const serverIndex = this.matterServers.indexOf(server);
+                            if (serverIndex >= 0) {
+                                this.matterServers.splice(serverIndex, 1);
+                            }
+                        }
+                        const cleanupCommissioning = this.commissioningStateCleanup.get(bridgeId);
+                        if (cleanupCommissioning) {
+                            cleanupCommissioning();
+                            this.commissioningStateCleanup.delete(bridgeId);
+                        }
+                        this.log.info(`deleteBridge: Lösche persistente Matter-Daten für "${bridgeId}".`);
+                        await server.erase();
+                        for (const key of [
+                            "status",
+                            "pairingQr",
+                            "pairingManualCode",
+                            "commissioned",
+                            "fabricCount",
+                        ]) {
+                            const id = `bridges.${bridgeId}.${key}`;
+                            const object = await this.getObjectAsync(id);
+                            if (object) {
+                                await this.delObjectAsync(id);
+                            }
+                        }
+                        this.matterServersById.delete(bridgeId);
+                        this.log.info(`deleteBridge: Bridge "${bridgeId}" vollständig entfernt.`);
+                        this.sendTo(obj.from, obj.command, { ok: true }, obj.callback);
+                    }
+                    catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        try {
+                            await this.setBridgeRuntimeState(bridgeId, "status", "error");
+                        }
+                        catch (statusError) {
+                            this.log.warn(`Fehlerstatus für Bridge "${bridgeId}" konnte nicht geschrieben werden: ${String(statusError)}`);
+                        }
+                        this.log.error(`deleteBridge für "${bridgeId}" fehlgeschlagen: ${message}`);
+                        this.sendTo(obj.from, obj.command, { ok: false, error: message }, obj.callback);
+                    }
+                })();
                 return;
             }
-            this.log.info(`Diagnose reopenCommissioning: Rufe enterCommissionableMode für "${bridgeId}" auf.`);
+            const server = this.matterServersById.get(bridgeId);
+            if (!server) {
+                this.sendTo(obj.from, obj.command, { ok: false, error: `Bridge "${bridgeId}" ist nicht aktiv.` }, obj.callback);
+                return;
+            }
             void Promise.resolve(server.act(agent => agent.get(commissioning_1.CommissioningServer).enterCommissionableMode()))
                 .then(() => {
-                this.log.info(`Diagnose reopenCommissioning: enterCommissionableMode für "${bridgeId}" erfolgreich.`);
+                this.log.info(`Commissioning-Modus für Bridge "${bridgeId}" erneut geöffnet.`);
                 this.sendTo(obj.from, obj.command, { ok: true }, obj.callback);
-                this.log.info(`Diagnose reopenCommissioning: Erfolgsantwort für "${bridgeId}" gesendet.`);
             })
                 .catch((error) => {
                 const message = error instanceof Error ? error.message : String(error);
-                this.log.warn(`Diagnose reopenCommissioning: Commissioning für Bridge "${bridgeId}" fehlgeschlagen: ${message}`);
+                this.log.warn(`Commissioning für Bridge "${bridgeId}" fehlgeschlagen: ${message}`);
                 this.sendTo(obj.from, obj.command, { ok: false, error: message }, obj.callback);
             });
         });
         this.on("unload", (callback) => {
+            for (const cleanup of this.commissioningStateCleanup.values()) {
+                cleanup();
+            }
+            this.commissioningStateCleanup.clear();
             this.unsubscribeForeignStates("*", (error) => {
                 if (error) {
                     this.log.debug(`Abmelden der State-Abonnements: ${String(error)}`);
@@ -303,9 +355,11 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
     }
     async initializeBridgeStatusStates(bridges) {
         const definitions = [
-            { key: "status", name: "Bridge-Status" },
-            { key: "pairingQr", name: "Matter QR-Pairing-Code" },
-            { key: "pairingManualCode", name: "Matter manueller Pairing-Code" },
+            { key: "status", name: "Bridge-Status", type: "string", role: "text" },
+            { key: "pairingQr", name: "Matter QR-Pairing-Code", type: "string", role: "text" },
+            { key: "pairingManualCode", name: "Matter manueller Pairing-Code", type: "string", role: "text" },
+            { key: "commissioned", name: "Matter gekoppelt", type: "boolean", role: "indicator" },
+            { key: "fabricCount", name: "Anzahl Matter-Fabrics", type: "number", role: "value" },
         ];
         for (const bridge of bridges) {
             for (const definition of definitions) {
@@ -313,8 +367,8 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
                     type: "state",
                     common: {
                         name: definition.name,
-                        type: "string",
-                        role: "text",
+                        type: definition.type,
+                        role: definition.role,
                         read: true,
                         write: false,
                     },
@@ -324,7 +378,39 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
             await this.setBridgeRuntimeState(bridge.id, "status", "starting");
             await this.setBridgeRuntimeState(bridge.id, "pairingQr", "");
             await this.setBridgeRuntimeState(bridge.id, "pairingManualCode", "");
+            await this.setBridgeMatterState(bridge.id, "commissioned", false);
+            await this.setBridgeMatterState(bridge.id, "fabricCount", 0);
         }
+    }
+    async setBridgeMatterState(bridgeId, key, value) {
+        await this.setStateAsync(`bridges.${bridgeId}.${key}`, {
+            val: value,
+            ack: true,
+        });
+    }
+    async refreshBridgeMatterState(bridgeId, server) {
+        const commissioning = server.state.commissioning;
+        await this.setBridgeMatterState(bridgeId, "commissioned", commissioning.commissioned);
+        await this.setBridgeMatterState(bridgeId, "fabricCount", Object.keys(commissioning.fabrics).length);
+    }
+    registerBridgeCommissioningListeners(bridgeId, server) {
+        const events = server.events.commissioning;
+        const refresh = () => {
+            void this.refreshBridgeMatterState(bridgeId, server).catch((error) => {
+                this.log.warn(`Matter-Kopplungsstatus für Bridge "${bridgeId}" konnte nicht aktualisiert werden: ${String(error)}`);
+            });
+        };
+        const commissionedObserver = () => refresh();
+        const decommissionedObserver = () => refresh();
+        const fabricsChangedObserver = () => refresh();
+        events.commissioned.on(commissionedObserver);
+        events.decommissioned.on(decommissionedObserver);
+        events.fabricsChanged.on(fabricsChangedObserver);
+        this.commissioningStateCleanup.set(bridgeId, () => {
+            events.commissioned.off(commissionedObserver);
+            events.decommissioned.off(decommissionedObserver);
+            events.fabricsChanged.off(fabricsChangedObserver);
+        });
     }
     async setBridgeRuntimeState(bridgeId, key, value) {
         await this.setStateAsync(`bridges.${bridgeId}.${key}`, {
@@ -543,6 +629,8 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
                 await server.start();
                 this.matterServers.push(server);
                 this.matterServersById.set(bridge.id, server);
+                this.registerBridgeCommissioningListeners(bridge.id, server);
+                await this.refreshBridgeMatterState(bridge.id, server);
                 this.log.info(`Matter-Bridge "${bridge.name}" gestartet: ` +
                     `${bridgeDevices.length} Gerät(e), Port ${bridge.port}.`);
                 await this.setBridgeRuntimeState(bridge.id, "status", "online");
@@ -559,24 +647,40 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
                 }
             }
             catch (error) {
+                if (server) {
+                    const cleanupCommissioning = this.commissioningStateCleanup.get(bridge.id);
+                    if (cleanupCommissioning) {
+                        cleanupCommissioning();
+                        this.commissioningStateCleanup.delete(bridge.id);
+                    }
+                    try {
+                        await server.stop();
+                        if (this.matterServersById.get(bridge.id) === server) {
+                            this.matterServersById.delete(bridge.id);
+                        }
+                        const serverIndex = this.matterServers.indexOf(server);
+                        if (serverIndex >= 0) {
+                            this.matterServers.splice(serverIndex, 1);
+                        }
+                    }
+                    catch (cleanupError) {
+                        this.log.warn(`Matter-Server "${bridge.id}" konnte nach dem Startfehler nicht ` +
+                            `gestoppt werden; Referenzen bleiben für die Bereinigung erhalten: ` +
+                            `${String(cleanupError)}`);
+                    }
+                }
                 try {
                     await this.setBridgeRuntimeState(bridge.id, "status", "error");
                     await this.setBridgeRuntimeState(bridge.id, "pairingQr", "");
                     await this.setBridgeRuntimeState(bridge.id, "pairingManualCode", "");
+                    await this.setBridgeMatterState(bridge.id, "commissioned", false);
+                    await this.setBridgeMatterState(bridge.id, "fabricCount", 0);
                 }
                 catch (statusError) {
                     this.log.warn(`Status für Bridge "${bridge.id}" konnte nicht geschrieben werden: ${String(statusError)}`);
                 }
                 this.log.error(`Matter-Bridge "${bridge.name}" (${bridge.id}) konnte nicht ` +
                     `gestartet werden: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
-                if (server && !this.matterServers.includes(server)) {
-                    try {
-                        await server.stop();
-                    }
-                    catch {
-                        // Fehler beim Aufräumen nicht über den Startfehler stellen.
-                    }
-                }
             }
         }
         this.log.info(`Matter-Server gestartet: ${this.matterServers.length} von ` +

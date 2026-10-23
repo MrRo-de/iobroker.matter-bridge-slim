@@ -1,6 +1,6 @@
 {
   "name": "iobroker.matter-bridge-slim",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Independent Matter bridge adapter for ioBroker",
   "main": "build/src/main.js",
   "scripts": {

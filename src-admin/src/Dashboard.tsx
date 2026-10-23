@@ -40,6 +40,8 @@ interface BridgeRuntime {
     status: string;
     pairingQr: string;
     pairingManualCode: string;
+    commissioned: boolean;
+    fabricCount: number;
 }
 
 interface DashboardState extends ConfigGenericState {
@@ -115,6 +117,8 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                 `${prefix}.status`,
                 `${prefix}.pairingQr`,
                 `${prefix}.pairingManualCode`,
+                `${prefix}.commissioned`,
+                `${prefix}.fabricCount`,
             ];
 
             const handler: ioBroker.StateChangeHandler = (id, state) => {
@@ -122,10 +126,19 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                 if (
                     field !== 'status' &&
                     field !== 'pairingQr' &&
-                    field !== 'pairingManualCode'
+                    field !== 'pairingManualCode' &&
+                    field !== 'commissioned' &&
+                    field !== 'fabricCount'
                 ) {
                     return;
                 }
+
+                const value =
+                    field === 'commissioned'
+                        ? state?.val === true
+                        : field === 'fabricCount'
+                          ? Number(state?.val ?? 0)
+                          : String(state?.val ?? '');
 
                 this.setState(previous => ({
                     bridgeRuntime: {
@@ -135,8 +148,10 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                                 status: 'Noch kein Status',
                                 pairingQr: '',
                                 pairingManualCode: '',
+                                commissioned: false,
+                                fabricCount: 0,
                             }),
-                            [field]: String(state?.val ?? ''),
+                            [field]: value,
                         },
                     },
                 }));
@@ -211,10 +226,12 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
         const prefix = `${connection.adapterName}.${connection.instance}.bridges.${bridgeId}`;
 
         try {
-            const [status, qr, manual] = await Promise.all([
+            const [status, qr, manual, commissioned, fabricCount] = await Promise.all([
                 connection.socket.getState(`${prefix}.status`),
                 connection.socket.getState(`${prefix}.pairingQr`),
                 connection.socket.getState(`${prefix}.pairingManualCode`),
+                connection.socket.getState(`${prefix}.commissioned`),
+                connection.socket.getState(`${prefix}.fabricCount`),
             ]);
 
             this.setState(state => ({
@@ -224,6 +241,8 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                         status: String(status?.val ?? 'Noch kein Status'),
                         pairingQr: String(qr?.val ?? ''),
                         pairingManualCode: String(manual?.val ?? ''),
+                        commissioned: commissioned?.val === true,
+                        fabricCount: Number(fabricCount?.val ?? 0),
                     },
                 },
             }));
@@ -235,6 +254,82 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                         status: `Abruffehler: ${String(error)}`,
                         pairingQr: '',
                         pairingManualCode: '',
+                        commissioned: false,
+                        fabricCount: 0,
+                    },
+                },
+            }));
+        }
+    };
+
+    private deleteBridge = async (bridgeId: string): Promise<void> => {
+        if (!window.confirm(
+            `Bridge "${bridgeId}" und ihre Matter-Identität einschließlich gespeicherter Fabrics endgültig löschen?`,
+        )) {
+            return;
+        }
+
+        const connection = this.props as ConfigGenericProps & {
+            socket: AdminConnection;
+            adapterName: string;
+            instance: number | string;
+        };
+        const target = `${connection.adapterName}.${connection.instance}`;
+
+        this.setState(state => ({
+            bridgeRuntime: {
+                ...state.bridgeRuntime,
+                [bridgeId]: {
+                    ...(state.bridgeRuntime[bridgeId] ?? {
+                        pairingQr: '',
+                        pairingManualCode: '',
+                    }),
+                    status: 'Bridge wird vollständig gelöscht …',
+                },
+            },
+        }));
+
+        try {
+            const result = await connection.socket.sendTo(
+                target,
+                'deleteBridge',
+                { bridgeId },
+            ) as { ok?: boolean; error?: string };
+
+            if (!result?.ok) {
+                throw new Error(result?.error || 'Keine Bestätigung vom Adapter erhalten.');
+            }
+
+            const currentData = this.props.data;
+            const bridges = Array.isArray(currentData.bridges)
+                ? currentData.bridges as Bridge[]
+                : [];
+            const devices = Array.isArray(currentData.devices)
+                ? currentData.devices as Device[]
+                : [];
+
+            this.props.onChange({
+                ...currentData,
+                bridges: bridges.filter(item => item.id !== bridgeId),
+                devices: devices.filter(item => item.bridgeId !== bridgeId),
+            }, undefined);
+
+            this.setState(state => {
+                const bridgeRuntime = { ...state.bridgeRuntime };
+                delete bridgeRuntime[bridgeId];
+                return { bridgeRuntime };
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.setState(state => ({
+                bridgeRuntime: {
+                    ...state.bridgeRuntime,
+                    [bridgeId]: {
+                        ...(state.bridgeRuntime[bridgeId] ?? {
+                            pairingQr: '',
+                            pairingManualCode: '',
+                        }),
+                        status: `Löschen fehlgeschlagen: ${message}`,
                     },
                 },
             }));
@@ -440,6 +535,12 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                                         >
                                             Status: {this.state.bridgeRuntime[bridge.id].status}
                                         </Typography>
+                                        <Typography variant="body2">
+                                            Matter gekoppelt: {this.state.bridgeRuntime[bridge.id].commissioned ? 'Ja' : 'Nein'}
+                                        </Typography>
+                                        <Typography variant="body2">
+                                            Fabrics: {this.state.bridgeRuntime[bridge.id].fabricCount}
+                                        </Typography>
                                         {this.state.bridgeRuntime[bridge.id].pairingQr ? (
                                             <QRCode
                                                 value={this.state.bridgeRuntime[bridge.id].pairingQr}
@@ -460,18 +561,9 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                                 )}
                                 <Button
                                     color="error"
-                                    onClick={() => {
-                                        const nextBridges = bridges.filter(item => item.id !== bridge.id);
-                                        const nextDevices = devices.filter(item => item.bridgeId !== bridge.id);
-
-                                        this.props.onChange({
-                                            ...this.props.data,
-                                            bridges: nextBridges,
-                                            devices: nextDevices,
-                                        }, undefined);
-                                    }}
+                                    onClick={() => void this.deleteBridge(bridge.id)}
                                 >
-                                    Bridge und zugeordnete Gerätekonfiguration entfernen
+                                    Bridge und Matter-Daten endgültig löschen
                                 </Button>
                             </Stack>
                         </CardContent>
