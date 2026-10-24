@@ -8,6 +8,7 @@ import {
     Button,
     Card,
     CardContent,
+    CircularProgress,
     Divider,
     MenuItem,
     Stack,
@@ -50,6 +51,7 @@ interface DashboardState extends ConfigGenericState {
     showSelectId: boolean;
     selectIdTarget: 'stateId' | 'brightnessStateId';
     bridgeRuntime: Record<string, BridgeRuntime>;
+    adapterRestarting: boolean;
 }
 
 const emptyBridge = (): Bridge => ({ id: '', name: '', port: 5540 });
@@ -68,8 +70,16 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
         handler: ioBroker.StateChangeHandler;
     }>();
 
+    private adapterAliveSubscription: {
+        id: string;
+        handler: ioBroker.StateChangeHandler;
+    } | undefined = undefined;
+    private adapterWasAlive = true;
+    private adapterRestartTimeout: ReturnType<typeof setTimeout> | undefined;
+
     componentDidMount(): Promise<void> {
         this.syncBridgeSubscriptions();
+        this.syncAdapterStatusSubscription();
         return Promise.resolve();
     }
 
@@ -82,11 +92,79 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
             socket: AdminConnection;
         };
 
+        if (this.adapterAliveSubscription) {
+            connection.socket.unsubscribeState(
+                [this.adapterAliveSubscription.id],
+                this.adapterAliveSubscription.handler,
+            );
+            this.adapterAliveSubscription = undefined;
+        }
+        if (this.adapterRestartTimeout !== undefined) {
+            clearTimeout(this.adapterRestartTimeout);
+            this.adapterRestartTimeout = undefined;
+        }
+
         for (const subscription of this.bridgeSubscriptions.values()) {
             connection.socket.unsubscribeState(subscription.ids, subscription.handler);
         }
         this.bridgeSubscriptions.clear();
     }
+
+    private syncAdapterStatusSubscription = (): void => {
+        const connection = this.props as ConfigGenericProps & {
+            socket: AdminConnection;
+            adapterName: string;
+            instance: number | string;
+        };
+        const id = `system.adapter.${connection.adapterName}.${connection.instance}.alive`;
+        let receivedStateEvent = false;
+
+        const handler: ioBroker.StateChangeHandler = (_stateId, state) => {
+            receivedStateEvent = true;
+            const alive = state?.val === true;
+
+            if (alive) {
+                this.adapterWasAlive = true;
+                if (this.adapterRestartTimeout !== undefined) {
+                    clearTimeout(this.adapterRestartTimeout);
+                    this.adapterRestartTimeout = undefined;
+                }
+                this.setState({ adapterRestarting: false });
+                return;
+            }
+
+            if (!this.adapterWasAlive) return;
+            this.adapterWasAlive = false;
+            this.setState({ adapterRestarting: true });
+
+            if (this.adapterRestartTimeout !== undefined) {
+                clearTimeout(this.adapterRestartTimeout);
+            }
+            this.adapterRestartTimeout = setTimeout(() => {
+                this.adapterRestartTimeout = undefined;
+                this.setState({ adapterRestarting: false });
+            }, 60000);
+        };
+
+        this.adapterAliveSubscription = { id, handler };
+
+        void connection.socket.subscribeState([id], handler)
+            .then(async () => {
+                try {
+                    const state = await connection.socket.getState(id);
+                    if (!receivedStateEvent) {
+                        this.adapterWasAlive = state?.val === true;
+                    }
+                } catch {
+                    if (!receivedStateEvent) this.adapterWasAlive = false;
+                }
+            })
+            .catch(() => {
+                if (this.adapterAliveSubscription?.handler === handler) {
+                    this.adapterAliveSubscription = undefined;
+                }
+            });
+    };
 
     private syncBridgeSubscriptions = (): void => {
         const connection = this.props as ConfigGenericProps & {
@@ -186,6 +264,7 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
             showSelectId: false,
             selectIdTarget: 'stateId',
             bridgeRuntime: {},
+            adapterRestarting: false,
         };
     }
 
@@ -362,7 +441,6 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                 { bridgeId },
             ) as { ok?: boolean; error?: string };
 
-            console.info('[matter-bridge-slim] sendTo Promise response:', result);
 
             if (!result?.ok) {
                 throw new Error(result?.error || 'Keine Bestätigung vom Adapter erhalten.');
@@ -370,15 +448,6 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
 
             await this.refreshBridgeRuntime(bridgeId);
 
-            this.setState(state => ({
-                bridgeRuntime: {
-                    ...state.bridgeRuntime,
-                    [bridgeId]: {
-                        ...(state.bridgeRuntime[bridgeId] ?? { pairingQr: '', pairingManualCode: '' }),
-                        status: 'Commissioning-Modus erneut geöffnet.',
-                    },
-                },
-            }));
         } catch (error) {
             this.setState(state => ({
                 bridgeRuntime: {
@@ -449,11 +518,13 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
             return;
         }
 
-        const port = Number(draft.port);
-        if (!Number.isInteger(port) || port < 1 || port > 65535) return;
-
-        this.updateBridges([...bridges, { ...draft, id: draft.id.trim(), name: draft.name.trim(), port }]);
-        this.setState({ bridgeDraft: { ...emptyBridge(), port: port + 1 } });
+        this.updateBridges([...bridges, {
+            ...draft,
+            id: draft.id.trim(),
+            name: draft.name.trim(),
+            port: 5540,
+        }]);
+        this.setState({ bridgeDraft: emptyBridge() });
     };
 
     private addDevice = (): void => {
@@ -503,6 +574,15 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
 
         return (
             <Stack spacing={2} sx={{ width: '100%', p: 1 }}>
+                {this.state.adapterRestarting && (
+                    <Alert
+                        severity="info"
+                        icon={<CircularProgress size={18} />}
+                        sx={{ py: 0, alignItems: 'center' }}
+                    >
+                        Neustart …
+                    </Alert>
+                )}
                 <Typography variant="h5">Matter Bridge Slim</Typography>
                 <Typography color="text.secondary">
                     Verwandelt ioBroker-States in Matter-Geräte und stellt sie anderen Matter-Systemen zur Verfügung.
@@ -529,10 +609,7 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                                 </Button>
                                 {this.state.bridgeRuntime[bridge.id] && (
                                     <Stack spacing={0.5} sx={{ minWidth: 220, overflowWrap: 'anywhere' }}>
-                                        <Typography
-                                            variant="body2"
-                                            sx={{ overflowWrap: 'anywhere', minWidth: 0 }}
-                                        >
+                                        <Typography variant="body2">
                                             Status: {this.state.bridgeRuntime[bridge.id].status}
                                         </Typography>
                                         <Typography variant="body2">
@@ -597,8 +674,6 @@ export default class Dashboard extends ConfigGeneric<ConfigGenericProps, Dashboa
                             <TextField label="Anzeigename" value={this.state.bridgeDraft.name}
                                 sx={{ width: 300, flexShrink: 0 }}
                                 onChange={event => this.updateBridgeDraft('name', event.target.value)} />
-                            <TextField label="Matter-Port" type="number" value={this.state.bridgeDraft.port}
-                                onChange={event => this.updateBridgeDraft('port', event.target.value)} />
                             <Button variant="contained" onClick={this.addBridge}>Hinzufügen</Button>
                         </Stack>
                     </CardContent>

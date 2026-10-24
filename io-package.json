@@ -1,7 +1,7 @@
 {
   "common": {
     "name": "matter-bridge-slim",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "title": "Matter Bridge Slim",
     "desc": "Independent Matter bridge adapter for ioBroker",
     "mode": "daemon",

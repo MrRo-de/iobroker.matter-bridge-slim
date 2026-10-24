@@ -1,3 +1,4 @@
+import { findOrphanedBridgeIds, ORPHAN_BRIDGE_STATE_KEYS } from "./bridgeStateCleanup.js";
 import { Adapter, type AdapterOptions } from "@iobroker/adapter-core";
 import { Endpoint, ServerNode, VendorId } from "@matter/main";
 import { CommissioningServer } from "@matter/node/behaviors/system/commissioning";
@@ -487,6 +488,58 @@ class MatterBridgeSlim extends Adapter {
         });
     }
 
+    private async cleanupOrphanedBridgeStates(
+        bridges: Array<{ id: string }>,
+    ): Promise<void> {
+        const configuredIds = new Set(bridges.map(bridge => bridge.id));
+        const prefix = `${this.namespace}.bridges.`;
+
+        let result;
+        try {
+            result = await this.getObjectListAsync({
+                startkey: prefix,
+                endkey: `${prefix}\u9999`,
+            });
+        } catch (error) {
+            this.log.warn(
+                `Verwaiste Bridge-States konnten nicht geprüft werden: ${String(error)}`,
+            );
+            return;
+        }
+
+        const orphanIds = findOrphanedBridgeIds(
+            result.rows ?? [],
+            this.namespace,
+            configuredIds,
+        );
+
+        for (const bridgeId of orphanIds) {
+            let deletedCount = 0;
+
+            for (const key of ORPHAN_BRIDGE_STATE_KEYS) {
+                const id = `bridges.${bridgeId}.${key}`;
+
+                try {
+                    const object = await this.getObjectAsync(id);
+                    if (object?.type === "state") {
+                        await this.delObjectAsync(id);
+                        deletedCount++;
+                    }
+                } catch (error) {
+                    this.log.warn(
+                        `Verwaister State "${id}" konnte nicht gelöscht werden: ${String(error)}`,
+                    );
+                }
+            }
+
+            if (deletedCount > 0) {
+                this.log.info(
+                    `Verwaiste Bridge-States für "${bridgeId}" bereinigt (${deletedCount}); Matter-Persistenz wurde nicht verändert.`,
+                );
+            }
+        }
+    }
+
     private async initializeBridgeStatusStates(
         bridges: Array<{ id: string }>,
     ): Promise<void> {
@@ -581,6 +634,8 @@ class MatterBridgeSlim extends Adapter {
         server: ServerNode,
     ): void {
         const events = server.events.commissioning;
+        let resetPending = false;
+
         const refresh = (): void => {
             void this.refreshBridgeMatterState(bridgeId, server).catch((error: unknown) => {
                 this.log.warn(
@@ -590,17 +645,110 @@ class MatterBridgeSlim extends Adapter {
         };
 
         const commissionedObserver = (): void => refresh();
-        const decommissionedObserver = (): void => refresh();
+
+        const decommissionedObserver = (): void => {
+            resetPending = true;
+            this.log.info(
+                `Fabric-Diagnose Bridge "${bridgeId}": letztes Fabric entfernt; ` +
+                `Factory-Reset erwartet. construction=${String(server.construction.status)}, ` +
+                `online=${server.lifecycle.isOnline}.`,
+            );
+            refresh();
+        };
+
         const fabricsChangedObserver = (): void => refresh();
+
+        const constructionObserver = (): void => {
+            if (!resetPending) {
+                return;
+            }
+
+            const status = String(server.construction.status);
+            const error = server.construction.error;
+
+            this.log.info(
+                `Fabric-Diagnose Bridge "${bridgeId}": construction=${status}, ` +
+                `online=${server.lifecycle.isOnline}` +
+                (error ? `, error=${String(error)}` : "") +
+                ".",
+            );
+
+            if (status === "crashed") {
+                this.log.error(
+                    `Fabric-Diagnose Bridge "${bridgeId}": Matter-Konstruktion abgestürzt; ` +
+                    `Reset-Fehler: ${String(error ?? "kein Fehlerobjekt verfügbar")}.`,
+                );
+                resetPending = false;
+            }
+        };
+
+        const goingOfflineObserver = (): void => {
+            if (resetPending) {
+                this.log.info(
+                    `Fabric-Diagnose Bridge "${bridgeId}": Server geht während des Resets offline.`,
+                );
+            }
+        };
+
+        const offlineObserver = (): void => {
+            if (resetPending) {
+                this.log.info(
+                    `Fabric-Diagnose Bridge "${bridgeId}": Server ist offline.`,
+                );
+            }
+        };
+
+        const onlineObserver = (): void => {
+            if (!resetPending) {
+                return;
+            }
+
+            this.log.info(
+                `Fabric-Diagnose Bridge "${bridgeId}": Server ist wieder online; ` +
+                `construction=${String(server.construction.status)}.`,
+            );
+
+            void this.refreshBridgeMatterState(bridgeId, server)
+                .then(() => {
+                    this.log.info(
+                        `Fabric-Diagnose Bridge "${bridgeId}": Status nach Wiederanlauf aktualisiert.`,
+                    );
+                    resetPending = false;
+
+                    this.log.info(
+                        `Fabric-Diagnose Bridge "${bridgeId}": Adapter-Neustart nach Fabric-Reset.`,
+                    );
+                    this.terminate(
+                        "Letztes Matter-Fabric entfernt; Neustart nach Factory-Reset.",
+                        156,
+                    );
+                })
+                .catch((error: unknown) => {
+                    this.log.warn(
+                        `Fabric-Diagnose Bridge "${bridgeId}": Status nach Wiederanlauf ` +
+                        `konnte nicht aktualisiert werden: ${String(error)}`,
+                    );
+                });
+        };
 
         events.commissioned.on(commissionedObserver);
         events.decommissioned.on(decommissionedObserver);
         events.fabricsChanged.on(fabricsChangedObserver);
 
+        server.construction.change.on(constructionObserver);
+        server.lifecycle.goingOffline.on(goingOfflineObserver);
+        server.lifecycle.offline.on(offlineObserver);
+        server.lifecycle.online.on(onlineObserver);
+
         this.commissioningStateCleanup.set(bridgeId, () => {
             events.commissioned.off(commissionedObserver);
             events.decommissioned.off(decommissionedObserver);
             events.fabricsChanged.off(fabricsChangedObserver);
+
+            server.construction.change.off(constructionObserver);
+            server.lifecycle.goingOffline.off(goingOfflineObserver);
+            server.lifecycle.offline.off(offlineObserver);
+            server.lifecycle.online.off(onlineObserver);
         });
     }
 
@@ -725,6 +873,7 @@ class MatterBridgeSlim extends Adapter {
             }
         }
 
+        await this.cleanupOrphanedBridgeStates(config.bridges);
         await this.initializeBridgeStatusStates(config.bridges);
 
         for (const bridge of config.bridges) {
