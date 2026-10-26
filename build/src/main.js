@@ -431,6 +431,7 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
             const credentials = agent.get(operational_credentials_1.OperationalCredentialsBehavior).state;
             return {
                 commissioned: commissioning.commissioned,
+                discriminator: commissioning.discriminator,
                 fabricCount: Object.keys(commissioning.fabrics).length,
                 commissionedFabrics: credentials.commissionedFabrics,
                 credentialsFabricCount: credentials.fabrics.length,
@@ -438,6 +439,7 @@ class MatterBridgeSlim extends adapter_core_1.Adapter {
         });
         this.log.info(`Matter-Statusdiagnose Bridge "${bridgeId}": ` +
             `commissioned=${snapshot.commissioned}, ` +
+            `discriminator=${snapshot.discriminator}, ` +
             `fabricCount=${snapshot.fabricCount}, ` +
             `commissionedFabrics=${snapshot.commissionedFabrics}, ` +
             `credentialsFabricCount=${snapshot.credentialsFabricCount}`);

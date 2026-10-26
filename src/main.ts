@@ -603,6 +603,7 @@ class MatterBridgeSlim extends Adapter {
 
             return {
                 commissioned: commissioning.commissioned,
+                discriminator: commissioning.discriminator,
                 fabricCount: Object.keys(commissioning.fabrics).length,
                 commissionedFabrics: credentials.commissionedFabrics,
                 credentialsFabricCount: credentials.fabrics.length,
@@ -612,6 +613,7 @@ class MatterBridgeSlim extends Adapter {
         this.log.info(
             `Matter-Statusdiagnose Bridge "${bridgeId}": ` +
             `commissioned=${snapshot.commissioned}, ` +
+            `discriminator=${snapshot.discriminator}, ` +
             `fabricCount=${snapshot.fabricCount}, ` +
             `commissionedFabrics=${snapshot.commissionedFabrics}, ` +
             `credentialsFabricCount=${snapshot.credentialsFabricCount}`,
